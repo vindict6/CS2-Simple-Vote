@@ -6,7 +6,7 @@ on:
 permissions:
   contents: write
 
-# The magic variable!
+# Plugin name used for the project file, DLL and release artifact names.
 env:
   PLUGIN_NAME: CS2SimpleVote
 

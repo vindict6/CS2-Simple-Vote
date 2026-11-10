@@ -166,7 +166,7 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
     // State: vote timing / center HUD.
     // _voteIsTimed: this vote ends on a timer (RTV, revote, or enable_timed_vote)
     // rather than on round ends. _voteEndsAtUtc is the absolute deadline — remaining
-    // time is always derived from it, so a 0.5s render tick can't drift the countdown.
+    // time is always derived from it, so the 0.25s render tick can't drift the countdown.
     private bool _voteIsTimed;
     private DateTime _voteEndsAtUtc = DateTime.MinValue;
 
@@ -313,10 +313,10 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
             int version = root.TryGetProperty("ConfigVersion", out var v) && v.TryGetInt32(out int vi) ? vi : 1;
             if (version >= CurrentConfigVersion) return false;
 
-            // Renamed key: vote_on_round (absolute round number) is now
-            // vote_rounds_before_end (rounds before the match can end). The value
-            // carries over so the scheduled vote stays enabled at a similar cadence,
-            // and the semantic change is called out loudly.
+            // vote_on_round (an absolute round number) maps to vote_rounds_before_end
+            // (rounds before the match can end). The value carries over so the scheduled
+            // vote stays enabled at a similar cadence, and the change in meaning is
+            // printed to the console.
             if (!root.TryGetProperty("vote_rounds_before_end", out _) &&
                 root.TryGetProperty("vote_on_round", out var vor) &&
                 vor.TryGetInt32(out int rounds) && rounds >= 0)
@@ -325,8 +325,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
                 Console.WriteLine($"[CS2SimpleVote] Migrated vote_on_round={rounds} -> vote_rounds_before_end={rounds}. NOTE: the new key counts rounds BEFORE the match can end, not an absolute round number — see CS2SimpleVote.README.md.");
             }
 
-            // The center-screen vote HUD postdates version 1: a migrated config must
-            // come out with it off, regardless of what defaults ever become.
+            // Version 1 had no center-screen vote HUD, so a migrated config always
+            // gets it disabled regardless of the current default.
             Config.EnableVoteHud = false;
 
             Config.Version = CurrentConfigVersion;
@@ -409,9 +409,9 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
     //   CS2SimpleVote.README.md    what every setting does (regenerated each load)
     //   CS2SimpleVote.example.json pristine defaults for reference
     // The live config is rewritten only when it is missing, predates this layout,
-    // or lacks a newly added key — always from the CURRENT values, so hand edits
-    // survive. CounterStrikeSharp parses with comments enabled, so the section
-    // headers are safe.
+    // or lacks a key — always from the current values, so hand edits survive.
+    // CounterStrikeSharp parses with comments enabled, so the section headers
+    // are safe.
 
     private const string ConfigMarker = "see CS2SimpleVote.README.md";
     private const string ConfigReadmeName = "CS2SimpleVote.README.md";
@@ -666,9 +666,9 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
             string text = File.Exists(_configFilePath) ? File.ReadAllText(_configFilePath) : "";
             string rendered = RenderSectionedConfig(Config);
 
-            // Keys come from the renderer itself, so this can never drift from the
-            // real schema: a key the file lacks (new in this version) forces a
-            // rewrite that adds it with its current (default) value.
+            // Keys come from the renderer itself, so this always matches the real
+            // schema: any key the file lacks forces a rewrite that adds it with its
+            // current (default) value.
             bool missingKey = false;
             using (var doc = JsonDocument.Parse(rendered, new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip }))
                 foreach (var prop in doc.RootElement.EnumerateObject())
@@ -710,15 +710,14 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
             ResetState();
         }
 
-        // Construct the path to the config folder manually:
-        // ModuleDirectory is ".../plugins/CS2SimpleVote"
-        // We want ".../configs/plugins/CS2SimpleVote"
+        // ModuleDirectory is ".../plugins/CS2SimpleVote"; the config folder is
+        // ".../configs/plugins/CS2SimpleVote"
         string configDir = Path.GetFullPath(Path.Combine(ModuleDirectory, "../../configs/plugins/CS2SimpleVote"));
 
-        // If for some reason the folder structure is non-standard and that doesn't exist, fallback to ModuleDirectory
+        // Non-standard layouts: create the folder, or fall back to ModuleDirectory
+        // if that fails.
         if (!Directory.Exists(configDir))
         {
-            // Try to create it, if fail, use plugin folder
             try { Directory.CreateDirectory(configDir); }
             catch { configDir = ModuleDirectory; }
         }
@@ -740,10 +739,9 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         _logBaseDir = Path.Combine(configDir, "logs");
         try { Directory.CreateDirectory(_logBaseDir); } catch { /* non-fatal */ }
 
-        // Clear existing memory state before loading
         _recentMaps.Clear();
 
-        // 1. Load Data Immediately (Sync)
+        // Map history and legacy file migration load synchronously.
         LoadMapHistory();
         MigrateLegacyFiles(configDir);
 
@@ -781,11 +779,11 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
 
         RefreshMapPools(force: true);
 
-        // 3. Start Background Update (initial load), then schedule periodic refresh.
+        // Initial background fetch of the collection, then the periodic refresh.
         LaunchCollectionFetch(isInitial: true);
 
-        // Long-lived refresh timer. Deliberately NOT flagged STOP_ON_MAPCHANGE — it must
-        // survive map changes and run for the whole plugin lifetime. It is created once
+        // Long-lived refresh timer. Not flagged STOP_ON_MAPCHANGE, so it survives map
+        // changes and runs for the whole plugin lifetime. It is created once
         // here and killed only in Unload, so it is never touched by ResetState/OnMapStart.
         if (Config.CollectionRefreshMinutes > 0)
         {
@@ -964,10 +962,10 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
     {
         _unloaded = true;
 
-        // 1. Cancel background tasks (FetchCollectionMaps) first
+        // Cancel background tasks (FetchCollectionMaps) first.
         _cts.Cancel();
 
-        // 2. Kill all timers to prevent any further callbacks
+        // Kill all timers so no further callbacks run.
         _reminderTimer?.Kill();
         _reminderTimer = null;
         _mapInfoTimer?.Kill();
@@ -981,7 +979,7 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         _collectionRefreshTimer?.Kill();
         _collectionRefreshTimer = null;
 
-        // 3. Clear collections to release references
+        // Release references held by the collections.
         _availableMaps.Clear();
         _recentMaps.Clear();
         _collectionMaps.Clear();
@@ -1004,7 +1002,6 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         _playerSetNextMapPage.Clear();
         _helpMenuPlayers.Clear();
 
-        // 6. Remove listeners and handlers
         DeregisterEventHandler<EventRoundStart>(OnRoundStart);
         DeregisterEventHandler<EventRoundEnd>(OnRoundEnd);
         DeregisterEventHandler<EventCsWinPanelMatch>(OnMatchEnd);
@@ -1021,7 +1018,7 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
             _playerChatDelegate = null;
         }
 
-        // 7. Dispose managed resources and recreate for potential hot reload
+        // Dispose and recreate managed resources in case of a hot reload.
         _cts.Dispose();
         _cts = new CancellationTokenSource();
 
@@ -1122,7 +1119,7 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
 
         string json = File.ReadAllText(_historyFilePath);
 
-        // Try loading the new MapItem format first
+        // Current format: a list of MapItem.
         try
         {
             var loaded = JsonSerializer.Deserialize<List<MapItem>>(json);
@@ -1134,7 +1131,7 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         }
         catch { /* Not MapItem format, try legacy */ }
 
-        // Migrate legacy List<string> format
+        // Legacy format: a plain list of IDs or engine map names.
         try
         {
             var legacyIds = JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
@@ -1704,7 +1701,7 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
     }
 
     // --- Omit matching helpers ---
-    // "Omitted" now simply means "enabled": false in the map's file. These helpers
+    // "Omitted" means "enabled": false in the map's file. These helpers
     // implement the word matching !omitmap/!unomitmap use to find which entries to
     // toggle: a map matches when its title (or, for stock maps, its engine name)
     // contains EVERY word of the pattern, case-insensitively and in any order.
@@ -1812,9 +1809,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
 
         _recentMaps.RemoveAll(m => m.Id.Equals(idToAdd, StringComparison.OrdinalIgnoreCase));
         _recentMaps.Add(new MapItem { Id = idToAdd, Name = nameToAdd ?? idToAdd });
-        // The list always ends with the CURRENT map, so keep count+1 entries: the
-        // current map plus the configured number of previous maps. Trimming to
-        // exactly RecentMapsCount silently reduced the exclusion window by one.
+        // The list always ends with the current map, so keep count+1 entries: the
+        // current map plus the configured number of previous maps.
         while (_recentMaps.Count > Config.RecentMapsCount + 1) _recentMaps.RemoveAt(0);
 
         // Backfill names for any legacy entries now that the map lists may be populated
@@ -1895,8 +1891,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
     {
         try
         {
-            // Uses the modern IPublishedFileService/GetDetails endpoint with includechildren=true.
-            // This returns, for each ID, its title, file_type, and (when it's a collection) its
+            // IPublishedFileService/GetDetails with includechildren=true returns, for each
+            // ID, its title, file_type, and (when it's a collection) its
             // children[] with file_type set. One endpoint handles both items and collections, so
             // the whole traversal is a BFS over GetDetails.
             //   file_type == 2  -> collection; enqueue each child
@@ -1914,8 +1910,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
 
             while (pending.Count > 0)
             {
-                // GetDetails accepts many IDs per call; Steam caps it around a few hundred but
-                // 100 per batch keeps URL length reasonable and matches legacy behavior.
+                // GetDetails accepts many IDs per call; Steam caps it around a few hundred,
+                // and 100 per batch keeps the URL length reasonable.
                 var batch = new List<string>();
                 while (pending.Count > 0 && batch.Count < 100)
                     batch.Add(pending.Dequeue());
@@ -1944,7 +1940,7 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
                         throw new Exception("Steam API returned no publishedfiledetails for the root collection. Check Collection ID.");
                     // Abort rather than continue: a silently dropped batch would make
                     // the sync think those maps left the collection, deleting their
-                    // entries (and any \"enabled\": false flags) from collection_maps.json.
+                    // entries (and any "enabled": false flags) from collection_maps.json.
                     throw new Exception($"Steam API returned no publishedfiledetails for a batch of {batch.Count} items — refresh aborted, keeping the current collection list.");
                 }
 
@@ -2451,8 +2447,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         if (!IsValidPlayer(player)) return;
         if (_recentMaps.Count > 1) 
         {
-            // The current map is usually pushed to the end of _recentMaps upon OnMapStart.
-            // Meaning, the "last" map before the current one is at count - 2.
+            // OnMapStart appends the current map to the end of _recentMaps, so the
+            // previous map is at count - 2.
             var lastMap = _recentMaps[_recentMaps.Count - 2];
             player!.PrintToChat($" {ColorDefault}The last played map was: {ColorGreen}{lastMap.Name}");
         }
@@ -2496,14 +2492,14 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         
         var reversed = _recentMaps.AsEnumerable().Reverse().ToList();
 
-        // Print up to recent configurations limit. Skipping index 0 if it's the current map.
+        // Newest first, up to the display limit, skipping the current map.
         int displayCount = 1;
         for(int i = 0; i < reversed.Count; i++)
         {
             if (displayCount > maxDisplayCount) break;
 
-            // Usually index 0 in the reversed list is the current active map because it gets appended to the end of the history.
-            // Let's filter out current map to show only purely *past* maps
+            // The current map is normally index 0 here, since it is appended to the
+            // end of the history; only previous maps are listed.
             if (IsCurrentMap(reversed[i])) continue;
 
             p.PrintToChat($" {ColorGreen}{displayCount}. {ColorDefault}{reversed[i].Name}");
@@ -2567,10 +2563,10 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         // Pick up realtime file edits (throttled — this path is player-spammable).
         RefreshMapPools();
 
-        // Recently played maps are excluded here too — this was the main way recent
-        // maps kept leaking back into votes: nominations skipped the recent filter
-        // and nominated maps go straight into every vote's option list. Disabled
-        // (omitted) maps are excluded implicitly: _availableMaps only holds enabled.
+        // Recently played maps are excluded here too: nominated maps go straight into
+        // the vote's option list, so they would otherwise bypass the recent-map
+        // filter. Disabled (omitted) maps are excluded implicitly, since
+        // _availableMaps only holds enabled ones.
         var validMaps = _availableMaps
             .Where(m => !_nominatedMaps.Any(n => n.Id == m.Id))
             .Where(m => !IsCurrentMap(m))
@@ -2849,7 +2845,7 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
 
     private void CloseSetNextMapMenu(CCSPlayerController player) { _setnextmapPlayers.Remove(player.Slot); _playerSetNextMapPage.Remove(player.Slot); }
 
-    // --- AddMap Logic (custom_maps.json) ---
+    // --- AddMap Logic (workshop_maps.json) ---
 
     private void AttemptAddMapFromChat(CCSPlayerController? player, string? arg)
     {
@@ -3043,7 +3039,7 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         return result;
     }
 
-    // --- OmitMap Logic (omitted_maps.json) ---
+    // --- OmitMap Logic ---
 
     private void AttemptOmitMapFromChat(CCSPlayerController? player, string? words)
     {
@@ -3401,13 +3397,14 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         // at any point up to this moment are reflected in this very vote.
         RefreshMapPools(force: true);
 
-        // 1. If force vote happening AFTER a finished vote, we must backup the result
+        // A force vote after a finished vote keeps the previous result, so it can be
+        // restored if nobody votes.
         if (isForceVote && _voteFinished)
         {
             _previousWinningMapId = _pendingMapId;
             _previousWinningMapName = _nextMapName;
         }
-        else if (!isForceVote) // If normal RTV or Scheduled vote, clear previous just in case
+        else if (!isForceVote) // RTV or scheduled vote: no previous result to fall back to
         {
             _previousWinningMapId = null;
             _previousWinningMapName = null;
@@ -3570,8 +3567,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
                 try { player.PrintToCenterHtml(" "); } catch { }
                 player.PrintToChat($" {ColorDefault}Vote panel {ColorRed}hidden{ColorDefault}. Chat {ColorGreen}0{ColorDefault} to show it again and follow the voting progress.");
             }
-            // Tallies changed — refresh the panel right away instead of waiting
-            // for the next 0.5s tick.
+            // Tallies changed, so refresh the panel right away instead of waiting
+            // for the next 0.25s tick.
             RefreshVotePanel();
             return HookResult.Handled;
         }
@@ -3588,13 +3585,12 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         _voteIsTimed = false;
         string winningMapId; int voteCount;
 
-        // Special Logic: Force Vote with existing winner
+        // Force vote with no votes cast keeps the previously chosen map.
         if (_isForceVote && _previousWinningMapId != null && _playerVotes.Count == 0)
         {
-            // Revert to previous winner
             winningMapId = _previousWinningMapId;
             _nextMapName = _previousWinningMapName;
-            voteCount = 0; // Or -1 to indicate override?
+            voteCount = 0;
             Server.PrintToChatAll($" {ColorDefault}No votes cast! Keeping previously selected next map.");
         }
         else if (_playerVotes.Count == 0)
@@ -3638,7 +3634,6 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
             _nextMapName = GetMapName(winningMapId);
         }
 
-        // Clear flags
         _isForceVote = false;
         _previousWinningMapId = null;
         _previousWinningMapName = null;
@@ -3668,8 +3663,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
 
         _nominatedMaps.Clear(); _hasNominatedSteamIds.Clear(); _nominationOwner.Clear(); _nominationNames.Clear();
 
-        // Extend never changes the map now — not even for RTV votes (an immediate
-        // change to the same map would just restart it). The current map is pended
+        // Extend never changes the map, even for RTV votes (an immediate change to
+        // the same map would just restart it). The current map is pended
         // as the next map and reloads at the end of the match.
         if (extendWon)
         {
@@ -3682,7 +3677,7 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
         }
 
         // RTV wins change the map immediately (after the configured short delay).
-        // Scheduled and force votes still pend the winner for end-of-match.
+        // Scheduled and force votes pend the winner for the end of the match.
         if (_isRtvVote)
         {
             _isRtvVote = false;
@@ -3745,17 +3740,17 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
     // further row would sit on top of the chat messages below it.
     // While the panel is on, the chat option list is suppressed.
     //
-    // Transport: the cached html is re-sent EVERY TICK — exactly what CSS core's
-    // own CenterHtmlMenu does. The display only stays up while it keeps being fed
-    // (the duration parameter does not reliably keep it alive, so sending only on
-    // change leaves visible gaps), while identical re-fires and content swaps are
-    // both seamless — the panel sits rock solid and updates without flashing. The
-    // string itself is rebuilt only on the 0.25s timer and when a vote is cast.
+    // Transport: the cached html is re-sent every tick, the same as CSS core's own
+    // CenterHtmlMenu. The display only stays up while it keeps being fed (the
+    // duration parameter does not reliably keep it alive, so sending only on
+    // change leaves visible gaps). Identical re-sends and content swaps are both
+    // seamless, so the panel updates without flashing. The string itself is
+    // rebuilt only on the 0.25s timer and when a vote is cast.
     //
     // Alignment: the panel centers every line individually, which scatters the
-    // option numbers when map names differ in width. Each line is therefore
-    // right-padded with width-estimated non-breaking spaces up to the widest line,
-    // so centering leaves all left edges — and the numbers — in a straight column.
+    // option numbers when map names differ in width. Each option row is padded
+    // with width-estimated non-breaking spaces to a common width, so centering
+    // leaves all left edges, and the numbers, in a straight column.
 
     private string _voteCenterHtmlCache = "";
     private float _voteTotalSeconds;
@@ -3778,10 +3773,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
     // Alt+255 (U+00A0), the blank glyph used for padding. Written as an escape so
     // no file-encoding step can mangle it.
     //
-    // Placement is what actually matters: a run of blanks at the END of a line is
-    // trimmed by the renderer no matter which blank character it is (that is why
-    // both the literal and the &nbsp; entity silently vanished, leaving the short
-    // rows centered and the numbers ragged). The pad is therefore emitted BETWEEN
+    // The renderer trims any run of blanks at the end of a line, whichever blank
+    // character (or &nbsp; entity) is used. The pad is therefore placed between
     // the map name and the vote tally, where it is flanked by visible glyphs and
     // cannot be trimmed.
     private const char PadChar = '\u00A0';
@@ -3793,10 +3786,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
     private static string HtmlEscape(string s)
         => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
-    // Per-glyph advance widths in 1/1000 em (Arial/Helvetica metrics), which model
-    // the panel's proportional font far better than a few coarse size buckets did.
-    // The buckets mis-measured punctuation-heavy names badly enough to shift a row
-    // by a character, which is what kept the number column ragged.
+    // Per-glyph advance widths in 1/1000 em (Arial/Helvetica metrics), used to
+    // approximate the panel's proportional font when the real font can't be read.
     // Index 0 == ' ' (U+0020) through '~' (U+007E).
     private static readonly short[] GlyphWidths =
     {
@@ -3812,9 +3803,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
     };
 
     // Advance widths measured from the game's own font at load (1/1000 em, index
-    // c - ' '), or null when the font could not be read — then the Arial table above
-    // is used. This is what makes the padding land on the real glyph widths instead
-    // of an approximation of them.
+    // c - ' '), or null when the font could not be read, in which case the Arial
+    // table above is used.
     private static float[]? _fontWidths;
     private static float _fontBulletWidth = 350f;
 
@@ -4434,8 +4424,8 @@ public class CS2SimpleVote : BasePlugin, IPluginConfig<VoteConfig>
     }
 
     // --- Logging Infrastructure ---
-    // Lightweight per-day event log. Only explicitly invoked for: map votes cast by players,
-    // RTVs, nominations, admin commands, map changes, and winning-map selections.
+    // Lightweight per-day event log, used for map votes cast by players, RTVs,
+    // nominations, admin commands, map changes, and winning-map selections.
     private void Log(string category, string message)
     {
         if (_unloaded || string.IsNullOrEmpty(_logBaseDir)) return;
